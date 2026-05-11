@@ -457,3 +457,4 @@ Deno.serve(async (req) => {
 });
 
 console.log("🤖 XGroup Support Bot (Deno) запущено!");
+
