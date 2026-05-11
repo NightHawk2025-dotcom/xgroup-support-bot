@@ -434,6 +434,7 @@ bot.on("message:text", async (ctx) => {
 });
 
 
+
 // ──────────────────────────────────────────────
 // Launch via Webhook (Deno Deploy)
 // ──────────────────────────────────────────────
@@ -443,8 +444,13 @@ await bot.init();
 const APP_URL = "https://xgroup-support-bot.nighthawk2025-dotcom.deno.net";
 const WEBHOOK_PATH = `/${BOT_TOKEN}`;
 
-await bot.api.setWebhook(`${APP_URL}${WEBHOOK_PATH}`);
-console.log(`🔗 Webhook: ${APP_URL}${WEBHOOK_PATH}`);
+// Set webhook, ignore 429 (already set by another instance)
+try {
+  await bot.api.setWebhook(`${APP_URL}${WEBHOOK_PATH}`);
+  console.log(`🔗 Webhook: ${APP_URL}${WEBHOOK_PATH}`);
+} catch (e: any) {
+  console.log("Webhook already set or rate limited, continuing...");
+}
 
 Deno.serve(async (req) => {
   const url = new URL(req.url);
@@ -457,4 +463,3 @@ Deno.serve(async (req) => {
 });
 
 console.log("🤖 XGroup Support Bot (Deno) запущено!");
-
