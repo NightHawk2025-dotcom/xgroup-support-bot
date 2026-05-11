@@ -433,26 +433,27 @@ bot.on("message:text", async (ctx) => {
   await ctx.reply("Скористайся меню нижче 👇", { reply_markup: isAdmin(ctx.from!.id) ? adminMainMenu : userMainMenu });
 });
 
+
 // ──────────────────────────────────────────────
 // Launch via Webhook (Deno Deploy)
 // ──────────────────────────────────────────────
 
-const handleUpdate = await bot.init().then(() => bot.createWebhook({ secretToken: BOT_TOKEN }));
+await bot.init();
+
+const APP_URL = "https://xgroup-support-bot.nighthawk2025-dotcom.deno.net";
+const WEBHOOK_PATH = `/${BOT_TOKEN}`;
+
+await bot.api.setWebhook(`${APP_URL}${WEBHOOK_PATH}`);
+console.log(`🔗 Webhook: ${APP_URL}${WEBHOOK_PATH}`);
 
 Deno.serve(async (req) => {
   const url = new URL(req.url);
-  if (req.method === "POST" && url.pathname === `/${BOT_TOKEN}`) {
-    await handleUpdate(req);
+  if (req.method === "POST" && url.pathname === WEBHOOK_PATH) {
+    const update = await req.json();
+    await bot.handleUpdate(update);
     return new Response("OK", { status: 200 });
   }
-  return new Response("XGroup Support Bot is running!", { status: 200 });
+  return new Response("🤖 XGroup Support Bot is running!", { status: 200 });
 });
-
-// Set webhook URL on startup
-const APP_URL = Deno.env.get("APP_URL");
-if (APP_URL) {
-  await bot.api.setWebhook(`${APP_URL}/${BOT_TOKEN}`);
-  console.log(`🔗 Webhook set: ${APP_URL}/${BOT_TOKEN}`);
-}
 
 console.log("🤖 XGroup Support Bot (Deno) запущено!");
