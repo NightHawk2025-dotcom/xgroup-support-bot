@@ -1,45 +1,34 @@
-import { Bot, session, InlineKeyboard, Keyboard } from "https://deno.land/x/grammy@v1.31.0/mod.ts";
+import { Bot, InlineKeyboard, Keyboard } from "https://deno.land/x/grammy@v1.31.0/mod.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-
-// ──────────────────────────────────────────────
-// Init
-// ──────────────────────────────────────────────
 
 const BOT_TOKEN = Deno.env.get("BOT_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const ADMIN_IDS = (Deno.env.get("ADMIN_IDS") || "")
-  .split(",")
-  .map((id) => parseInt(id.trim()))
-  .filter(Boolean);
+  .split(",").map((id) => parseInt(id.trim())).filter(Boolean);
 const SUPPORT_CHAT_ID = Deno.env.get("SUPPORT_CHAT_ID")
-  ? parseInt(Deno.env.get("SUPPORT_CHAT_ID")!)
-  : null;
+  ? parseInt(Deno.env.get("SUPPORT_CHAT_ID")!) : null;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const bot = new Bot(BOT_TOKEN);
-
 const isAdmin = (id: number) => ADMIN_IDS.includes(id);
 
 // ──────────────────────────────────────────────
-// Session
+// Session via Supabase (multi-instance safe)
 // ──────────────────────────────────────────────
 
-interface SessionData {
-  state: string | null;
-  ticketSubject: string | null;
-  activeTicketId: number | null;
-  replyTicketId: number | null;
+async function getSession(userId: number): Promise<any> {
+  const { data } = await supabase.from("sessions").select("value").eq("key", String(userId)).single();
+  return data?.value || { state: null, ticketSubject: null, activeTicketId: null, replyTicketId: null };
 }
 
-bot.use(session({
-  initial: (): SessionData => ({
-    state: null,
-    ticketSubject: null,
-    activeTicketId: null,
-    replyTicketId: null,
-  }),
-}));
+async function setSession(userId: number, value: any): Promise<void> {
+  await supabase.from("sessions").upsert({ key: String(userId), value, updated_at: new Date().toISOString() }, { onConflict: "key" });
+}
+
+async function clearSession(userId: number): Promise<void> {
+  await setSession(userId, { state: null, ticketSubject: null, activeTicketId: null, replyTicketId: null });
+}
 
 // ──────────────────────────────────────────────
 // Keyboards
@@ -47,14 +36,12 @@ bot.use(session({
 
 const userMainMenu = new Keyboard()
   .text("📩 Створити тікет").text("📋 Мої тікети").row()
-  .text("❓ Допомога")
-  .resized();
+  .text("❓ Допомога").resized();
 
 const adminMainMenu = new Keyboard()
   .text("📋 Всі тікети").text("🔓 Відкриті тікети").row()
   .text("📊 Статистика").text("👥 Користувачі").row()
-  .text("✅ В обробці")
-  .resized();
+  .text("✅ В обробці").resized();
 
 const cancelKeyboard = new Keyboard().text("❌ Скасувати").resized();
 
@@ -64,12 +51,9 @@ const cancelKeyboard = new Keyboard().text("❌ Скасувати").resized();
 
 async function upsertUser(from: any) {
   await supabase.from("users").upsert({
-    telegram_id: from.id,
-    username: from.username || null,
-    first_name: from.first_name || null,
-    last_name: from.last_name || null,
-    language_code: from.language_code || null,
-    last_seen: new Date().toISOString(),
+    telegram_id: from.id, username: from.username || null,
+    first_name: from.first_name || null, last_name: from.last_name || null,
+    language_code: from.language_code || null, last_seen: new Date().toISOString(),
   }, { onConflict: "telegram_id" });
 }
 
@@ -79,38 +63,32 @@ async function logEvent(type: string, telegramId: number, meta = {}) {
 
 async function createTicket(telegramId: number, subject: string, text: string) {
   const { data } = await supabase.from("tickets")
-    .insert({ user_telegram_id: telegramId, subject, status: "open" })
-    .select().single();
-  if (data) await supabase.from("messages").insert({
-    ticket_id: data.id, sender_telegram_id: telegramId, text, role: "user"
-  });
+    .insert({ user_telegram_id: telegramId, subject, status: "open" }).select().single();
+  if (data) await supabase.from("messages").insert({ ticket_id: data.id, sender_telegram_id: telegramId, text, role: "user" });
   return data;
 }
 
 async function getTicket(ticketId: number) {
-  const { data } = await supabase.from("tickets")
-    .select("*, users(*)").eq("id", ticketId).single();
+  const { data } = await supabase.from("tickets").select("*, users(*)").eq("id", ticketId).single();
   return data;
 }
 
 async function getUserOpenTicket(telegramId: number) {
-  const { data } = await supabase.from("tickets")
-    .select("*").eq("user_telegram_id", telegramId).eq("status", "open")
+  const { data } = await supabase.from("tickets").select("*")
+    .eq("user_telegram_id", telegramId).eq("status", "open")
     .order("created_at", { ascending: false }).limit(1).single();
   return data;
 }
 
 async function getUserTickets(telegramId: number) {
-  const { data } = await supabase.from("tickets")
-    .select("*").eq("user_telegram_id", telegramId)
-    .order("created_at", { ascending: false });
+  const { data } = await supabase.from("tickets").select("*")
+    .eq("user_telegram_id", telegramId).order("created_at", { ascending: false });
   return data || [];
 }
 
 async function getAllTickets(status?: string) {
   let query = supabase.from("tickets")
-    .select("*, users(first_name, username, telegram_id)")
-    .order("created_at", { ascending: false });
+    .select("*, users(first_name, username, telegram_id)").order("created_at", { ascending: false });
   if (status) query = query.eq("status", status);
   const { data } = await query;
   return data || [];
@@ -125,8 +103,7 @@ async function updateTicketStatus(ticketId: number, status: string, adminId?: nu
 
 async function assignTicket(ticketId: number, adminId: number) {
   const { data } = await supabase.from("tickets")
-    .update({ assigned_to: adminId, status: "in_progress" })
-    .eq("id", ticketId).select().single();
+    .update({ assigned_to: adminId, status: "in_progress" }).eq("id", ticketId).select().single();
   return data;
 }
 
@@ -135,8 +112,8 @@ async function addMessage(ticketId: number, senderTelegramId: number, text: stri
 }
 
 async function getTicketMessages(ticketId: number) {
-  const { data } = await supabase.from("messages")
-    .select("*").eq("ticket_id", ticketId).order("created_at", { ascending: true });
+  const { data } = await supabase.from("messages").select("*")
+    .eq("ticket_id", ticketId).order("created_at", { ascending: true });
   return data || [];
 }
 
@@ -159,8 +136,8 @@ async function getAllUsers() {
 // Helpers
 // ──────────────────────────────────────────────
 
-function statusEmoji(status: string) {
-  return ({ open: "🔓", in_progress: "🔄", closed: "✅" } as any)[status] || "❓";
+function statusEmoji(s: string) {
+  return ({ open: "🔓", in_progress: "🔄", closed: "✅" } as any)[s] || "❓";
 }
 
 async function sendTicketToAdmin(ctx: any, t: any) {
@@ -168,16 +145,12 @@ async function sendTicketToAdmin(ctx: any, t: any) {
   const userLine = user
     ? `${user.first_name || ""}${user.username ? " (@" + user.username + ")" : ""}`
     : `ID: ${t.user_telegram_id}`;
-
   await ctx.reply(
     `${statusEmoji(t.status)} *Тікет #${t.id}*\n👤 ${userLine}\n📌 ${t.subject}\n📅 ${new Date(t.created_at).toLocaleString("uk-UA")}\n🏷 ${t.status}`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard()
+    { parse_mode: "Markdown", reply_markup: new InlineKeyboard()
         .text("💬 Відповісти", `reply_${t.id}`).row()
         .text("🔄 Взяти в роботу", `assign_${t.id}`).text("✅ Закрити", `aclose_${t.id}`).row()
-        .text("📜 Переглянути діалог", `view_${t.id}`)
-    }
+        .text("📜 Переглянути діалог", `view_${t.id}`) }
   );
 }
 
@@ -214,13 +187,12 @@ bot.hears("📩 Створити тікет", async (ctx) => {
       { parse_mode: "Markdown", reply_markup: userMainMenu }
     );
   }
-  (ctx.session as SessionData).state = "awaiting_subject";
+  await setSession(ctx.from!.id, { state: "awaiting_subject", ticketSubject: null, activeTicketId: null, replyTicketId: null });
   await ctx.reply("📝 Вкажи тему звернення:", { reply_markup: cancelKeyboard });
 });
 
 bot.hears("❌ Скасувати", async (ctx) => {
-  const sess = ctx.session as SessionData;
-  sess.state = null; sess.ticketSubject = null;
+  await clearSession(ctx.from!.id);
   await ctx.reply("Скасовано.", { reply_markup: isAdmin(ctx.from!.id) ? adminMainMenu : userMainMenu });
 });
 
@@ -231,11 +203,8 @@ bot.hears("📋 Мої тікети", async (ctx) => {
   if (!tickets.length) return ctx.reply("У тебе ще немає тікетів 📩", { reply_markup: userMainMenu });
   for (const t of tickets.slice(0, 10)) {
     const btns = new InlineKeyboard();
-    if (t.status !== "closed") {
-      btns.text("💬 Написати", `write_${t.id}`).text("✅ Закрити", `uclose_${t.id}`)
-    } else {
-      btns.text("📜 Переглянути", `view_${t.id}`)
-    }
+    if (t.status !== "closed") btns.text("💬 Написати", `write_${t.id}`).text("✅ Закрити", `uclose_${t.id}`);
+    else btns.text("📜 Переглянути", `view_${t.id}`);
     await ctx.reply(
       `${statusEmoji(t.status)} *Тікет #${t.id}*\n📌 ${t.subject}\n📅 ${new Date(t.created_at).toLocaleString("uk-UA")}`,
       { parse_mode: "Markdown", reply_markup: btns }
@@ -335,9 +304,7 @@ bot.callbackQuery(/^write_(\d+)$/, async (ctx) => {
   const ticketId = parseInt(ctx.match[1]);
   const ticket = await getTicket(ticketId);
   if (!ticket || ticket.user_telegram_id !== ctx.from.id) return ctx.answerCallbackQuery("Немає доступу");
-  const sess = ctx.session as SessionData;
-  sess.state = "messaging_ticket";
-  sess.activeTicketId = ticketId;
+  await setSession(ctx.from.id, { state: "messaging_ticket", ticketSubject: null, activeTicketId: ticketId, replyTicketId: null });
   await ctx.answerCallbackQuery();
   await ctx.reply(`💬 Пишіть повідомлення для тікету *#${ticketId}*:`, { parse_mode: "Markdown", reply_markup: cancelKeyboard });
 });
@@ -345,9 +312,7 @@ bot.callbackQuery(/^write_(\d+)$/, async (ctx) => {
 bot.callbackQuery(/^reply_(\d+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery("Немає доступу");
   const ticketId = parseInt(ctx.match[1]);
-  const sess = ctx.session as SessionData;
-  sess.state = "admin_replying";
-  sess.replyTicketId = ticketId;
+  await setSession(ctx.from.id, { state: "admin_replying", ticketSubject: null, activeTicketId: null, replyTicketId: ticketId });
   await ctx.answerCallbackQuery();
   await ctx.reply(`✍️ Відповідь для тікету *#${ticketId}*:`, { parse_mode: "Markdown", reply_markup: cancelKeyboard });
 });
@@ -369,24 +334,23 @@ bot.callbackQuery(/^view_(\d+)$/, async (ctx) => {
 });
 
 // ──────────────────────────────────────────────
-// Text message handler (state machine)
+// Text message handler
 // ──────────────────────────────────────────────
 
 bot.on("message:text", async (ctx) => {
   await upsertUser(ctx.from!);
-  const sess = ctx.session as SessionData;
+  const sess = await getSession(ctx.from!.id);
   const text = ctx.message.text;
 
   if (sess.state === "awaiting_subject") {
     if (text.length > 200) return ctx.reply("Тема занадто довга (до 200 символів):", { reply_markup: cancelKeyboard });
-    sess.ticketSubject = text;
-    sess.state = "awaiting_ticket_text";
+    await setSession(ctx.from!.id, { ...sess, ticketSubject: text, state: "awaiting_ticket_text" });
     return ctx.reply("📝 Тепер опиши проблему детально:", { reply_markup: cancelKeyboard });
   }
 
   if (sess.state === "awaiting_ticket_text") {
     const ticket = await createTicket(ctx.from!.id, sess.ticketSubject!, text);
-    sess.state = null; sess.ticketSubject = null;
+    await clearSession(ctx.from!.id);
     if (!ticket) return ctx.reply("❌ Помилка. Спробуй ще раз.", { reply_markup: userMainMenu });
     await logEvent("ticket_created", ctx.from!.id, { ticketId: ticket.id });
     await ctx.reply(
@@ -404,7 +368,7 @@ bot.on("message:text", async (ctx) => {
     const ticketId = sess.activeTicketId!;
     await addMessage(ticketId, ctx.from!.id, text, "user");
     await logEvent("message_sent", ctx.from!.id, { ticketId, role: "user" });
-    sess.state = null; sess.activeTicketId = null;
+    await clearSession(ctx.from!.id);
     await ctx.reply(`✅ Повідомлення надіслано до тікету *#${ticketId}*.`, { parse_mode: "Markdown", reply_markup: userMainMenu });
     const notifyText = `💬 *Нове повідомлення в тікеті #${ticketId}*\n👤 ${ctx.from!.first_name || ""}\n\n${text.substring(0, 500)}`;
     const btns = new InlineKeyboard().text("💬 Відповісти", `reply_${ticketId}`);
@@ -416,7 +380,7 @@ bot.on("message:text", async (ctx) => {
   if (sess.state === "admin_replying" && isAdmin(ctx.from!.id)) {
     const ticketId = sess.replyTicketId!;
     const ticket = await getTicket(ticketId);
-    sess.state = null; sess.replyTicketId = null;
+    await clearSession(ctx.from!.id);
     if (!ticket) return ctx.reply("Тікет не знайдено.", { reply_markup: adminMainMenu });
     await addMessage(ticketId, ctx.from!.id, text, "admin");
     await logEvent("message_sent", ctx.from!.id, { ticketId, role: "admin" });
@@ -433,8 +397,6 @@ bot.on("message:text", async (ctx) => {
   await ctx.reply("Скористайся меню нижче 👇", { reply_markup: isAdmin(ctx.from!.id) ? adminMainMenu : userMainMenu });
 });
 
-
-
 // ──────────────────────────────────────────────
 // Launch via Webhook (Deno Deploy)
 // ──────────────────────────────────────────────
@@ -444,12 +406,11 @@ await bot.init();
 const APP_URL = "https://xgroup-support-bot.nighthawk2025-dotcom.deno.net";
 const WEBHOOK_PATH = `/${BOT_TOKEN}`;
 
-// Set webhook, ignore 429 (already set by another instance)
 try {
   await bot.api.setWebhook(`${APP_URL}${WEBHOOK_PATH}`);
   console.log(`🔗 Webhook: ${APP_URL}${WEBHOOK_PATH}`);
-} catch (e: any) {
-  console.log("Webhook already set or rate limited, continuing...");
+} catch (_e) {
+  console.log("Webhook already set, continuing...");
 }
 
 Deno.serve(async (req) => {
